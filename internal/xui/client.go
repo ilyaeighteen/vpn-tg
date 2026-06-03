@@ -43,10 +43,24 @@ type AddClientResult struct {
 	UUID  string
 }
 
+type PanelClient struct {
+	Email string
+	ID    string
+}
+
 type apiResponse struct {
 	Success bool            `json:"success"`
 	Msg     string          `json:"msg"`
 	Obj     json.RawMessage `json:"obj"`
+}
+
+type inbound struct {
+	ID       int    `json:"id"`
+	Settings string `json:"settings"`
+}
+
+type inboundSettings struct {
+	Clients []inboundClient `json:"clients"`
 }
 
 type inboundClient struct {
@@ -123,6 +137,73 @@ func (c *Client) AddClient(ctx context.Context, inboundID int, email string) (Ad
 	return AddClientResult{Email: email, UUID: uuid}, nil
 }
 
+func (c *Client) ListClients(ctx context.Context, inboundID int) ([]PanelClient, error) {
+	if inboundID <= 0 {
+		inboundID = c.cfg.InboundID
+	}
+
+	resp, err := c.get(ctx, "/panel/api/inbounds/get/"+strconv.Itoa(inboundID))
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("3x-ui get inbound failed: %s", resp.Msg)
+	}
+
+	var item inbound
+	if err := json.Unmarshal(resp.Obj, &item); err != nil {
+		return nil, fmt.Errorf("decode inbound: %w", err)
+	}
+
+	var settings inboundSettings
+	if strings.TrimSpace(item.Settings) != "" {
+		if err := json.Unmarshal([]byte(item.Settings), &settings); err != nil {
+			return nil, fmt.Errorf("decode inbound settings: %w", err)
+		}
+	}
+
+	clients := make([]PanelClient, 0, len(settings.Clients))
+	for _, client := range settings.Clients {
+		clients = append(clients, PanelClient{
+			Email: client.Email,
+			ID:    client.ID,
+		})
+	}
+	return clients, nil
+}
+
+func (c *Client) DeleteClientByEmail(ctx context.Context, inboundID int, email string) error {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return errors.New("email is required")
+	}
+	if inboundID <= 0 {
+		inboundID = c.cfg.InboundID
+	}
+
+	path := "/panel/api/inbounds/" + strconv.Itoa(inboundID) + "/delClientByEmail/" + url.PathEscape(email)
+	resp, err := c.postForm(ctx, path, url.Values{})
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("3x-ui delete client failed: %s", resp.Msg)
+	}
+	return nil
+}
+
+func (c *Client) get(ctx context.Context, path string) (apiResponse, error) {
+	endpoint := c.cfg.BaseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return apiResponse{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.cfg.APIToken)
+
+	return c.do(req, path)
+}
+
 func (c *Client) postForm(ctx context.Context, path string, form url.Values) (apiResponse, error) {
 	endpoint := c.cfg.BaseURL + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
@@ -133,6 +214,10 @@ func (c *Client) postForm(ctx context.Context, path string, form url.Values) (ap
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIToken)
 
+	return c.do(req, path)
+}
+
+func (c *Client) do(req *http.Request, path string) (apiResponse, error) {
 	res, err := c.http.Do(req)
 	if err != nil {
 		return apiResponse{}, err

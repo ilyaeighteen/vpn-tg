@@ -9,6 +9,7 @@ Telegram bot for creating 3x-ui clients from an admin-only button UI.
 - Add admins by `@username` after the user has sent any message to the bot.
 - Remove admins, but never remove the last admin.
 - Create a 3x-ui client for a configured inbound by entering only the client email.
+- List and delete existing 3x-ui clients for the configured inbound.
 - Flexible `.env` configuration.
 
 ## Setup
@@ -57,7 +58,9 @@ Admin storage is mounted as a Docker volume at `/data/admins.json`.
 
 The bot calls these 3x-ui endpoints:
 
+- `GET /panel/api/inbounds/get/:id`
 - `POST /panel/api/inbounds/addClient`
+- `POST /panel/api/inbounds/:id/delClientByEmail/:email`
 
 3x-ui requests are authorized with `Authorization: Bearer <XUI_API_TOKEN>`.
 

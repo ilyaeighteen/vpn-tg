@@ -19,6 +19,8 @@ import (
 
 const (
 	callbackCreateClient = "create_client"
+	callbackClients      = "clients"
+	callbackDeleteClient = "delete_client"
 	callbackAdmins       = "admins"
 	callbackAddAdmin     = "add_admin"
 	callbackBack         = "back"
@@ -27,6 +29,7 @@ const (
 
 	stateNone state = iota
 	stateAwaitClientEmail
+	stateAwaitDeleteClientEmail
 	stateAwaitAdminID
 )
 
@@ -46,6 +49,8 @@ type UserStore interface {
 
 type XUIClient interface {
 	AddClient(ctx context.Context, inboundID int, email string) (xui.AddClientResult, error)
+	ListClients(ctx context.Context, inboundID int) ([]xui.PanelClient, error)
+	DeleteClientByEmail(ctx context.Context, inboundID int, email string) error
 }
 
 type Bot struct {
@@ -117,6 +122,8 @@ func (b *Bot) handleMessage(message *tgbotapi.Message) {
 	switch b.getState(userID) {
 	case stateAwaitClientEmail:
 		b.createClient(chatID, userID, message.Text)
+	case stateAwaitDeleteClientEmail:
+		b.deleteClient(chatID, userID, message.Text)
 	case stateAwaitAdminID:
 		b.addAdmin(chatID, userID, message.Text)
 	default:
@@ -140,6 +147,12 @@ func (b *Bot) handleCallback(query *tgbotapi.CallbackQuery) {
 	case data == callbackCreateClient:
 		b.setState(userID, stateAwaitClientEmail)
 		b.editOrSend(query.Message, "Введите email клиента для inbound #"+strconv.Itoa(b.inboundID), cancelKeyboard())
+	case data == callbackClients:
+		b.setState(userID, stateNone)
+		b.showClients(query.Message)
+	case data == callbackDeleteClient:
+		b.setState(userID, stateAwaitDeleteClientEmail)
+		b.editOrSend(query.Message, "Введите email клиента, которого нужно удалить из inbound #"+strconv.Itoa(b.inboundID), cancelKeyboard())
 	case data == callbackAdmins:
 		b.setState(userID, stateNone)
 		b.editOrSend(query.Message, b.adminsText(), adminsKeyboard(b.admins.List()))
@@ -181,6 +194,52 @@ func (b *Bot) createClient(chatID int64, userID int64, email string) {
 
 	text := fmt.Sprintf("Клиент создан\n\nEmail: %s\nUUID: %s\nInbound: #%d", result.Email, result.UUID, b.inboundID)
 	b.send(chatID, text, mainKeyboard())
+}
+
+func (b *Bot) showClients(message *tgbotapi.Message) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	clients, err := b.xui.ListClients(ctx, b.inboundID)
+	if err != nil {
+		log.Printf("list clients failed: %v", err)
+		b.editOrSend(message, "Не удалось получить клиентов: "+err.Error(), mainKeyboard())
+		return
+	}
+
+	if len(clients) == 0 {
+		b.editOrSend(message, "В inbound #"+strconv.Itoa(b.inboundID)+" клиентов нет", clientsKeyboard())
+		return
+	}
+
+	lines := []string{"Клиенты inbound #" + strconv.Itoa(b.inboundID) + ":"}
+	for i, client := range clients {
+		lines = append(lines, strconv.Itoa(i+1)+". "+client.Email)
+	}
+
+	b.editOrSend(message, strings.Join(lines, "\n"), clientsKeyboard())
+}
+
+func (b *Bot) deleteClient(chatID int64, userID int64, email string) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		b.send(chatID, "Email не должен быть пустым", cancelKeyboard())
+		return
+	}
+
+	b.setState(userID, stateNone)
+	b.send(chatID, "Удаляю клиента из 3x-ui...", nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := b.xui.DeleteClientByEmail(ctx, b.inboundID, email); err != nil {
+		log.Printf("delete client failed: %v", err)
+		b.sendMainMenu(chatID, "Не удалось удалить клиента: "+err.Error())
+		return
+	}
+
+	b.send(chatID, "Клиент удален: "+email, mainKeyboard())
 }
 
 func (b *Bot) addAdmin(chatID int64, userID int64, rawID string) {
@@ -325,7 +384,21 @@ func mainKeyboard() tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("Создать клиента", callbackCreateClient),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Клиенты", callbackClients),
+		),
+		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Админы", callbackAdmins),
+		),
+	)
+}
+
+func clientsKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Удалить клиента", callbackDeleteClient),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Назад", callbackBack),
 		),
 	)
 }
