@@ -66,6 +66,6 @@ The bot calls these 3x-ui endpoints:
 
 3x-ui requests are authorized with `Authorization: Bearer <XUI_API_TOKEN>`.
 
-Protocol links are fetched from `GET /panel/api/inbounds/getClientLinks/:id/:email`. Subscription URLs are built from `XUI_BASE_URL`, `XUI_SUBSCRIPTION_PATH`, and the client's `subId`.
+Protocol links are fetched from `GET /panel/api/inbounds/getClientLinks/:id/:email`. Subscription URLs are built from `XUI_SUBSCRIPTION_URL` and the client's `subId`, for example `https://panel.example.com/sub/:subid`.
 
 Client defaults are controlled by the `XUI_CLIENT_*` variables.

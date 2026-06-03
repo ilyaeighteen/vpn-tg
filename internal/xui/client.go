@@ -18,13 +18,12 @@ import (
 )
 
 type Config struct {
-	BaseURL             string
-	APIToken            string
-	InboundID           int
-	HTTPTimeout         time.Duration
-	SubscriptionBaseURL string
-	SubscriptionPath    string
-	DefaultClient       ClientDefaults
+	BaseURL                 string
+	APIToken                string
+	InboundID               int
+	HTTPTimeout             time.Duration
+	SubscriptionURLTemplate string
+	DefaultClient           ClientDefaults
 }
 
 type ClientDefaults struct {
@@ -266,24 +265,16 @@ func (c *Client) findClientByEmail(ctx context.Context, inboundID int, email str
 
 func (c *Client) subscriptionURL(subID string) string {
 	subID = strings.TrimSpace(subID)
-	if subID == "" || c.cfg.SubscriptionBaseURL == "" {
+	template := strings.TrimSpace(c.cfg.SubscriptionURLTemplate)
+	if subID == "" || template == "" {
 		return ""
 	}
 
-	baseURL := strings.TrimRight(c.cfg.SubscriptionBaseURL, "/")
-	path := strings.TrimSpace(c.cfg.SubscriptionPath)
-	if path == "" {
-		path = "/sub/:subid"
-	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-
 	escapedSubID := url.PathEscape(subID)
-	if strings.Contains(path, ":subid") {
-		return baseURL + strings.ReplaceAll(path, ":subid", escapedSubID)
+	if strings.Contains(template, ":subid") {
+		return strings.ReplaceAll(template, ":subid", escapedSubID)
 	}
-	return baseURL + strings.TrimRight(path, "/") + "/" + escapedSubID
+	return strings.TrimRight(template, "/") + "/" + escapedSubID
 }
 
 func (c *Client) get(ctx context.Context, path string) (apiResponse, error) {

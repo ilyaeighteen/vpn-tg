@@ -52,14 +52,16 @@ func Load() (Config, error) {
 func loadXUI() (xui.Config, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("XUI_BASE_URL")), "/")
 	apiToken := strings.TrimSpace(os.Getenv("XUI_API_TOKEN"))
-	subscriptionBaseURL := strings.TrimRight(getenv("XUI_SUBSCRIPTION_BASE_URL", baseURL), "/")
-	subscriptionPath := getenv("XUI_SUBSCRIPTION_PATH", "/sub/:subid")
+	subscriptionURL := getenv("XUI_SUBSCRIPTION_URL", "")
 
 	if baseURL == "" {
 		return xui.Config{}, errors.New("XUI_BASE_URL is required")
 	}
 	if apiToken == "" {
 		return xui.Config{}, errors.New("XUI_API_TOKEN is required")
+	}
+	if subscriptionURL == "" {
+		subscriptionURL = buildSubscriptionURL(baseURL, getenv("XUI_SUBSCRIPTION_PATH", "/sub/:subid"))
 	}
 
 	inboundID, err := getInt("XUI_INBOUND_ID", 0)
@@ -93,12 +95,11 @@ func loadXUI() (xui.Config, error) {
 	}
 
 	return xui.Config{
-		BaseURL:             baseURL,
-		APIToken:            apiToken,
-		InboundID:           inboundID,
-		HTTPTimeout:         timeout,
-		SubscriptionBaseURL: subscriptionBaseURL,
-		SubscriptionPath:    subscriptionPath,
+		BaseURL:                 baseURL,
+		APIToken:                apiToken,
+		InboundID:               inboundID,
+		HTTPTimeout:             timeout,
+		SubscriptionURLTemplate: subscriptionURL,
 		DefaultClient: xui.ClientDefaults{
 			Flow:       strings.TrimSpace(os.Getenv("XUI_CLIENT_FLOW")),
 			LimitIP:    limitIP,
@@ -107,6 +108,18 @@ func loadXUI() (xui.Config, error) {
 			Enable:     enable,
 		},
 	}, nil
+}
+
+func buildSubscriptionURL(baseURL string, path string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = "/sub/:subid"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return baseURL + path
 }
 
 func getenv(key, fallback string) string {
