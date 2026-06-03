@@ -17,6 +17,7 @@ type Config struct {
 	TelegramBotToken string
 	InitialAdminIDs  []int64
 	AdminsFile       string
+	UsersFile        string
 	XUI              xui.Config
 }
 
@@ -26,6 +27,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		TelegramBotToken: strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 		AdminsFile:       getenv("ADMINS_FILE", "admins.json"),
+		UsersFile:        getenv("USERS_FILE", "users.json"),
 	}
 
 	if cfg.TelegramBotToken == "" {

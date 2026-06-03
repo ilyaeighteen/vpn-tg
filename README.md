@@ -6,6 +6,7 @@ Telegram bot for creating 3x-ui clients from an admin-only button UI.
 
 - Admin-only access.
 - Add admins by Telegram ID.
+- Add admins by `@username` after the user has sent any message to the bot.
 - Remove admins, but never remove the last admin.
 - Create a 3x-ui client for a configured inbound by entering only the client email.
 - Flexible `.env` configuration.
@@ -51,6 +52,8 @@ Admin storage is mounted as a Docker volume at `/data/admins.json`.
 ## Notes
 
 `INITIAL_ADMIN_IDS` are merged into `ADMINS_FILE` on startup. Keep at least one ID there for the first launch; the bot refuses to start without any admin.
+
+`USERS_FILE` stores Telegram users who have interacted with the bot. This is required for adding admins by `@username`, because Telegram Bot API does not resolve arbitrary usernames to user IDs.
 
 The bot calls these 3x-ui endpoints:
 

@@ -9,6 +9,7 @@ services:
       - .env
     environment:
       ADMINS_FILE: /data/admins.json
+      USERS_FILE: /data/users.json
     volumes:
       - bot-data:/data
 

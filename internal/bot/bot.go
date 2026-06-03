@@ -13,6 +13,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"vpn-tg/internal/admins"
+	"vpn-tg/internal/users"
 	"vpn-tg/internal/xui"
 )
 
@@ -38,6 +39,11 @@ type AdminStore interface {
 	Remove(id int64) error
 }
 
+type UserStore interface {
+	Save(user users.User) error
+	FindByUsername(username string) (users.User, error)
+}
+
 type XUIClient interface {
 	AddClient(ctx context.Context, inboundID int, email string) (xui.AddClientResult, error)
 }
@@ -45,6 +51,7 @@ type XUIClient interface {
 type Bot struct {
 	api       *tgbotapi.BotAPI
 	admins    AdminStore
+	users     UserStore
 	xui       XUIClient
 	inboundID int
 
@@ -52,7 +59,7 @@ type Bot struct {
 	states   map[int64]state
 }
 
-func New(token string, adminStore AdminStore, xuiClient XUIClient, inboundID int) (*Bot, error) {
+func New(token string, adminStore AdminStore, userStore UserStore, xuiClient XUIClient, inboundID int) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, err
@@ -61,6 +68,7 @@ func New(token string, adminStore AdminStore, xuiClient XUIClient, inboundID int
 	return &Bot{
 		api:       api,
 		admins:    adminStore,
+		users:     userStore,
 		xui:       xuiClient,
 		inboundID: inboundID,
 		states:    make(map[int64]state),
@@ -87,6 +95,8 @@ func (b *Bot) Run() error {
 func (b *Bot) handleMessage(message *tgbotapi.Message) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
+
+	b.rememberUser(message.From)
 
 	if !b.admins.IsAdmin(userID) {
 		b.send(chatID, "Доступ запрещен. Ваш Telegram ID: "+strconv.FormatInt(userID, 10), nil)
@@ -117,6 +127,7 @@ func (b *Bot) handleMessage(message *tgbotapi.Message) {
 func (b *Bot) handleCallback(query *tgbotapi.CallbackQuery) {
 	userID := query.From.ID
 
+	b.rememberUser(query.From)
 	b.answerCallback(query.ID, "")
 
 	if !b.admins.IsAdmin(userID) {
@@ -134,7 +145,7 @@ func (b *Bot) handleCallback(query *tgbotapi.CallbackQuery) {
 		b.editOrSend(query.Message, b.adminsText(), adminsKeyboard(b.admins.List()))
 	case data == callbackAddAdmin:
 		b.setState(userID, stateAwaitAdminID)
-		b.editOrSend(query.Message, "Введите Telegram ID нового админа", cancelKeyboard())
+		b.editOrSend(query.Message, "Введите Telegram ID или @username нового админа", cancelKeyboard())
 	case data == callbackBack:
 		b.setState(userID, stateNone)
 		b.editOrSend(query.Message, "Панель управления", mainKeyboard())
@@ -173,9 +184,9 @@ func (b *Bot) createClient(chatID int64, userID int64, email string) {
 }
 
 func (b *Bot) addAdmin(chatID int64, userID int64, rawID string) {
-	id, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
-	if err != nil || id <= 0 {
-		b.send(chatID, "Введите корректный Telegram ID числом", cancelKeyboard())
+	id, label, err := b.resolveAdminInput(rawID)
+	if err != nil {
+		b.send(chatID, "Введите Telegram ID или @username пользователя, который уже писал боту", cancelKeyboard())
 		return
 	}
 
@@ -185,7 +196,7 @@ func (b *Bot) addAdmin(chatID int64, userID int64, rawID string) {
 		return
 	}
 
-	b.send(chatID, "Админ добавлен: "+strconv.FormatInt(id, 10), mainKeyboard())
+	b.send(chatID, "Админ добавлен: "+label, mainKeyboard())
 }
 
 func (b *Bot) removeAdmin(message *tgbotapi.Message, actorID int64, rawID string) {
@@ -242,6 +253,40 @@ func (b *Bot) answerCallback(callbackID string, text string) {
 	if _, err := b.api.Request(callback); err != nil {
 		log.Printf("answer callback failed: %v", err)
 	}
+}
+
+func (b *Bot) rememberUser(user *tgbotapi.User) {
+	if user == nil {
+		return
+	}
+
+	if err := b.users.Save(users.User{
+		ID:        user.ID,
+		Username:  user.UserName,
+		FirstName: user.FirstName,
+		LastName:  user.LastName,
+	}); err != nil {
+		log.Printf("save telegram user failed: %v", err)
+	}
+}
+
+func (b *Bot) resolveAdminInput(input string) (int64, string, error) {
+	input = strings.TrimSpace(input)
+	id, err := strconv.ParseInt(input, 10, 64)
+	if err == nil && id > 0 {
+		return id, strconv.FormatInt(id, 10), nil
+	}
+
+	user, err := b.users.FindByUsername(input)
+	if err != nil {
+		return 0, "", err
+	}
+
+	label := strconv.FormatInt(user.ID, 10)
+	if user.Username != "" {
+		label += " (@" + user.Username + ")"
+	}
+	return user.ID, label, nil
 }
 
 func (b *Bot) adminsText() string {

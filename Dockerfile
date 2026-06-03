@@ -18,6 +18,7 @@ WORKDIR /app
 COPY --from=builder /out/vpn-tg-bot /app/vpn-tg-bot
 
 ENV ADMINS_FILE=/data/admins.json
+ENV USERS_FILE=/data/users.json
 
 RUN mkdir -p /data && chown -R app:app /data /app
 USER app
