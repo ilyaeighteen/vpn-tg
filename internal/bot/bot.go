@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	qrcode "github.com/skip2/go-qrcode"
 
 	"vpn-tg/internal/admins"
 	"vpn-tg/internal/users"
@@ -20,6 +21,8 @@ import (
 const (
 	callbackCreateClient = "create_client"
 	callbackClients      = "clients"
+	callbackClientLinks  = "client_links"
+	callbackClientPrefix = "client:"
 	callbackDeleteClient = "delete_client"
 	callbackAdmins       = "admins"
 	callbackAddAdmin     = "add_admin"
@@ -29,6 +32,7 @@ const (
 
 	stateNone state = iota
 	stateAwaitClientEmail
+	stateAwaitClientLinksEmail
 	stateAwaitDeleteClientEmail
 	stateAwaitAdminID
 )
@@ -50,7 +54,9 @@ type UserStore interface {
 type XUIClient interface {
 	AddClient(ctx context.Context, inboundID int, email string) (xui.AddClientResult, error)
 	ListClients(ctx context.Context, inboundID int) ([]xui.PanelClient, error)
+	FindClientByID(ctx context.Context, inboundID int, clientID string) (xui.PanelClient, error)
 	DeleteClientByEmail(ctx context.Context, inboundID int, email string) error
+	GetClientLinks(ctx context.Context, inboundID int, email string) (xui.ClientLinksResult, error)
 }
 
 type Bot struct {
@@ -122,6 +128,8 @@ func (b *Bot) handleMessage(message *tgbotapi.Message) {
 	switch b.getState(userID) {
 	case stateAwaitClientEmail:
 		b.createClient(chatID, userID, message.Text)
+	case stateAwaitClientLinksEmail:
+		b.sendClientLinks(chatID, userID, message.Text)
 	case stateAwaitDeleteClientEmail:
 		b.deleteClient(chatID, userID, message.Text)
 	case stateAwaitAdminID:
@@ -150,6 +158,12 @@ func (b *Bot) handleCallback(query *tgbotapi.CallbackQuery) {
 	case data == callbackClients:
 		b.setState(userID, stateNone)
 		b.showClients(query.Message)
+	case data == callbackClientLinks:
+		b.setState(userID, stateAwaitClientLinksEmail)
+		b.editOrSend(query.Message, "Введите email клиента для вывода ссылок и QR", cancelKeyboard())
+	case strings.HasPrefix(data, callbackClientPrefix):
+		b.setState(userID, stateNone)
+		b.sendClientLinksByID(query.Message.Chat.ID, userID, strings.TrimPrefix(data, callbackClientPrefix))
 	case data == callbackDeleteClient:
 		b.setState(userID, stateAwaitDeleteClientEmail)
 		b.editOrSend(query.Message, "Введите email клиента, которого нужно удалить из inbound #"+strconv.Itoa(b.inboundID), cancelKeyboard())
@@ -208,16 +222,63 @@ func (b *Bot) showClients(message *tgbotapi.Message) {
 	}
 
 	if len(clients) == 0 {
-		b.editOrSend(message, "В inbound #"+strconv.Itoa(b.inboundID)+" клиентов нет", clientsKeyboard())
+		b.editOrSend(message, "В inbound #"+strconv.Itoa(b.inboundID)+" клиентов нет", clientsKeyboard(nil))
 		return
 	}
 
-	lines := []string{"Клиенты inbound #" + strconv.Itoa(b.inboundID) + ":"}
+	lines := []string{"Клиенты inbound #" + strconv.Itoa(b.inboundID) + ":", "Нажмите на клиента, чтобы получить ссылки и QR."}
 	for i, client := range clients {
 		lines = append(lines, strconv.Itoa(i+1)+". "+client.Email)
 	}
 
-	b.editOrSend(message, strings.Join(lines, "\n"), clientsKeyboard())
+	b.editOrSend(message, strings.Join(lines, "\n"), clientsKeyboard(clients))
+}
+
+func (b *Bot) sendClientLinks(chatID int64, userID int64, email string) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		b.send(chatID, "Email не должен быть пустым", cancelKeyboard())
+		return
+	}
+
+	b.setState(userID, stateNone)
+	b.send(chatID, "Получаю ссылки клиента...", nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := b.xui.GetClientLinks(ctx, b.inboundID, email)
+	if err != nil {
+		log.Printf("get client links failed: %v", err)
+		b.sendMainMenu(chatID, "Не удалось получить ссылки клиента: "+err.Error())
+		return
+	}
+	if len(result.Links) == 0 {
+		b.send(chatID, "Для клиента "+result.Email+" ссылки не найдены", clientsKeyboard(nil))
+		return
+	}
+
+	b.sendLongText(chatID, formatClientLinks(result), clientsKeyboard(nil))
+	if result.SubscriptionURL != "" {
+		b.sendQRCodeWithCaption(chatID, safeFilename(result.Email)+"-subscription.png", "QR подписки для "+result.Email, result.SubscriptionURL)
+	}
+	for i, link := range result.Links {
+		b.sendQRCode(chatID, result.Email, i+1, link)
+	}
+}
+
+func (b *Bot) sendClientLinksByID(chatID int64, userID int64, clientID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, err := b.xui.FindClientByID(ctx, b.inboundID, clientID)
+	if err != nil {
+		log.Printf("find client failed: %v", err)
+		b.sendMainMenu(chatID, "Не удалось найти клиента: "+err.Error())
+		return
+	}
+
+	b.sendClientLinks(chatID, userID, client.Email)
 }
 
 func (b *Bot) deleteClient(chatID int64, userID int64, email string) {
@@ -295,6 +356,43 @@ func (b *Bot) send(chatID int64, text string, markup any) {
 	}
 }
 
+func (b *Bot) sendLongText(chatID int64, text string, markup any) {
+	const maxMessageLen = 3900
+
+	for len(text) > maxMessageLen {
+		cut := strings.LastIndex(text[:maxMessageLen], "\n")
+		if cut <= 0 {
+			cut = maxMessageLen
+		}
+		b.send(chatID, text[:cut], nil)
+		text = strings.TrimSpace(text[cut:])
+	}
+	b.send(chatID, text, markup)
+}
+
+func (b *Bot) sendQRCode(chatID int64, email string, index int, link string) {
+	b.sendQRCodeWithCaption(chatID, safeFilename(email)+"-"+strconv.Itoa(index)+".png", "QR "+strconv.Itoa(index)+" для "+email, link)
+}
+
+func (b *Bot) sendQRCodeWithCaption(chatID int64, filename string, caption string, link string) {
+	png, err := qrcode.Encode(link, qrcode.Medium, 512)
+	if err != nil {
+		log.Printf("generate qr failed: %v", err)
+		b.send(chatID, "Не удалось создать QR: "+err.Error(), nil)
+		return
+	}
+
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{
+		Name:  filename,
+		Bytes: png,
+	})
+	photo.Caption = caption
+	if _, err := b.api.Send(photo); err != nil {
+		log.Printf("send qr failed: %v", err)
+		b.send(chatID, "Не удалось отправить QR: "+err.Error(), nil)
+	}
+}
+
 func (b *Bot) editOrSend(message *tgbotapi.Message, text string, markup any) {
 	edit := tgbotapi.NewEditMessageText(message.Chat.ID, message.MessageID, text)
 	if markup != nil {
@@ -361,6 +459,35 @@ func (b *Bot) adminsText() string {
 	return strings.Join(lines, "\n")
 }
 
+func formatClientLinks(result xui.ClientLinksResult) string {
+	lines := []string{"Ссылки клиента " + result.Email + ":"}
+	if result.SubscriptionURL != "" {
+		lines = append(lines, "", "URL подписки:", result.SubscriptionURL)
+	}
+	for i, link := range result.Links {
+		lines = append(lines, "", strconv.Itoa(i+1)+". "+link)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func safeFilename(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "client"
+	}
+
+	var builder strings.Builder
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			builder.WriteRune(r)
+		}
+	}
+	if builder.Len() == 0 {
+		return "client"
+	}
+	return builder.String()
+}
+
 func (b *Bot) setState(userID int64, s state) {
 	b.statesMu.Lock()
 	defer b.statesMu.Unlock()
@@ -392,8 +519,21 @@ func mainKeyboard() tgbotapi.InlineKeyboardMarkup {
 	)
 }
 
-func clientsKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
+func clientsKeyboard(clients []xui.PanelClient) tgbotapi.InlineKeyboardMarkup {
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(clients)+3)
+	for _, client := range clients {
+		if client.ID == "" {
+			continue
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(client.Email, callbackClientPrefix+client.ID),
+		))
+	}
+
+	rows = append(rows,
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Ссылки и QR", callbackClientLinks),
+		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Удалить клиента", callbackDeleteClient),
 		),
@@ -401,6 +541,7 @@ func clientsKeyboard() tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("Назад", callbackBack),
 		),
 	)
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 func adminsKeyboard(ids []int64) tgbotapi.InlineKeyboardMarkup {

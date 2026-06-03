@@ -18,11 +18,13 @@ import (
 )
 
 type Config struct {
-	BaseURL       string
-	APIToken      string
-	InboundID     int
-	HTTPTimeout   time.Duration
-	DefaultClient ClientDefaults
+	BaseURL             string
+	APIToken            string
+	InboundID           int
+	HTTPTimeout         time.Duration
+	SubscriptionBaseURL string
+	SubscriptionPath    string
+	DefaultClient       ClientDefaults
 }
 
 type ClientDefaults struct {
@@ -43,9 +45,16 @@ type AddClientResult struct {
 	UUID  string
 }
 
+type ClientLinksResult struct {
+	Email           string
+	SubscriptionURL string
+	Links           []string
+}
+
 type PanelClient struct {
 	Email string
 	ID    string
+	SubID string
 }
 
 type apiResponse struct {
@@ -167,9 +176,28 @@ func (c *Client) ListClients(ctx context.Context, inboundID int) ([]PanelClient,
 		clients = append(clients, PanelClient{
 			Email: client.Email,
 			ID:    client.ID,
+			SubID: client.SubID,
 		})
 	}
 	return clients, nil
+}
+
+func (c *Client) FindClientByID(ctx context.Context, inboundID int, clientID string) (PanelClient, error) {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return PanelClient{}, errors.New("client id is required")
+	}
+
+	clients, err := c.ListClients(ctx, inboundID)
+	if err != nil {
+		return PanelClient{}, err
+	}
+	for _, client := range clients {
+		if client.ID == clientID {
+			return client, nil
+		}
+	}
+	return PanelClient{}, fmt.Errorf("client not found: %s", clientID)
 }
 
 func (c *Client) DeleteClientByEmail(ctx context.Context, inboundID int, email string) error {
@@ -190,6 +218,72 @@ func (c *Client) DeleteClientByEmail(ctx context.Context, inboundID int, email s
 		return fmt.Errorf("3x-ui delete client failed: %s", resp.Msg)
 	}
 	return nil
+}
+
+func (c *Client) GetClientLinks(ctx context.Context, inboundID int, email string) (ClientLinksResult, error) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return ClientLinksResult{}, errors.New("email is required")
+	}
+	if inboundID <= 0 {
+		inboundID = c.cfg.InboundID
+	}
+
+	path := "/panel/api/inbounds/getClientLinks/" + strconv.Itoa(inboundID) + "/" + url.PathEscape(email)
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return ClientLinksResult{}, err
+	}
+	if !resp.Success {
+		return ClientLinksResult{}, fmt.Errorf("3x-ui get client links failed: %s", resp.Msg)
+	}
+
+	var links []string
+	if err := json.Unmarshal(resp.Obj, &links); err != nil {
+		return ClientLinksResult{}, fmt.Errorf("decode client links: %w", err)
+	}
+
+	subscriptionURL := ""
+	if client, err := c.findClientByEmail(ctx, inboundID, email); err == nil {
+		subscriptionURL = c.subscriptionURL(client.SubID)
+	}
+
+	return ClientLinksResult{Email: email, SubscriptionURL: subscriptionURL, Links: links}, nil
+}
+
+func (c *Client) findClientByEmail(ctx context.Context, inboundID int, email string) (PanelClient, error) {
+	clients, err := c.ListClients(ctx, inboundID)
+	if err != nil {
+		return PanelClient{}, err
+	}
+	for _, client := range clients {
+		if client.Email == email {
+			return client, nil
+		}
+	}
+	return PanelClient{}, fmt.Errorf("client not found: %s", email)
+}
+
+func (c *Client) subscriptionURL(subID string) string {
+	subID = strings.TrimSpace(subID)
+	if subID == "" || c.cfg.SubscriptionBaseURL == "" {
+		return ""
+	}
+
+	baseURL := strings.TrimRight(c.cfg.SubscriptionBaseURL, "/")
+	path := strings.TrimSpace(c.cfg.SubscriptionPath)
+	if path == "" {
+		path = "/sub/:subid"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	escapedSubID := url.PathEscape(subID)
+	if strings.Contains(path, ":subid") {
+		return baseURL + strings.ReplaceAll(path, ":subid", escapedSubID)
+	}
+	return baseURL + strings.TrimRight(path, "/") + "/" + escapedSubID
 }
 
 func (c *Client) get(ctx context.Context, path string) (apiResponse, error) {

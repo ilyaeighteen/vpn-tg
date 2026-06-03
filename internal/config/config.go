@@ -52,6 +52,8 @@ func Load() (Config, error) {
 func loadXUI() (xui.Config, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("XUI_BASE_URL")), "/")
 	apiToken := strings.TrimSpace(os.Getenv("XUI_API_TOKEN"))
+	subscriptionBaseURL := strings.TrimRight(getenv("XUI_SUBSCRIPTION_BASE_URL", baseURL), "/")
+	subscriptionPath := getenv("XUI_SUBSCRIPTION_PATH", "/sub/:subid")
 
 	if baseURL == "" {
 		return xui.Config{}, errors.New("XUI_BASE_URL is required")
@@ -91,10 +93,12 @@ func loadXUI() (xui.Config, error) {
 	}
 
 	return xui.Config{
-		BaseURL:     baseURL,
-		APIToken:    apiToken,
-		InboundID:   inboundID,
-		HTTPTimeout: timeout,
+		BaseURL:             baseURL,
+		APIToken:            apiToken,
+		InboundID:           inboundID,
+		HTTPTimeout:         timeout,
+		SubscriptionBaseURL: subscriptionBaseURL,
+		SubscriptionPath:    subscriptionPath,
 		DefaultClient: xui.ClientDefaults{
 			Flow:       strings.TrimSpace(os.Getenv("XUI_CLIENT_FLOW")),
 			LimitIP:    limitIP,
