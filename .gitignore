@@ -1,0 +1,4 @@
+.env
+admins.json
+bin/
+dist/

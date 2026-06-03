@@ -1,0 +1,16 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vpn-tg-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ADMINS_FILE: /data/admins.json
+    volumes:
+      - bot-data:/data
+
+volumes:
+  bot-data:
